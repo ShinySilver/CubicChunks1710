@@ -106,7 +106,7 @@ public class CubeProviderServer extends ChunkProviderServer
     private final Map<ChunkCoordIntPair, EagerCubeLoadContainer> eagerLoads = new Object2ObjectOpenHashMap<>();
     private final List<ChunkCoordIntPair> eagerLoadOrder = new ArrayList<>();
 
-    private static final int MAX_NS_SPENT_LOADING = 10_000_000;
+    private static final int MIN_NS_SPENT_LOADING = 10_000_000;
 
     private int loadedColumns, loadedCubes;
     private long lastTickEnd = 0, loadTimeAccumulator;
@@ -311,6 +311,14 @@ public class CubeProviderServer extends ChunkProviderServer
     }
 
     private void doEagerLoading() {
+        doEagerLoadingUntil(System.nanoTime() + MIN_NS_SPENT_LOADING);
+    }
+
+    /**
+     * Processes eager requests until the supplied monotonic deadline. This is also used by the server's idle-time
+     * loader: normal world ticking guarantees the usual 10 ms pass, then otherwise-unused sleep time may extend it.
+     */
+    public void doEagerLoadingUntil(long deadlineNanos) {
         profiler.startSection("Eager object sorting");
 
         // TODO: make this faster
@@ -321,11 +329,12 @@ public class CubeProviderServer extends ChunkProviderServer
         profiler.endStartSection("Eager object loading");
 
         long start = System.nanoTime();
+        boolean minimumPass = deadlineNanos - start <= MIN_NS_SPENT_LOADING;
 
         int processed = 0;
         int startCols = eagerLoadOrder.size();
 
-        while ((System.nanoTime() - start) < MAX_NS_SPENT_LOADING && !eagerLoadOrder.isEmpty()) {
+        while (System.nanoTime() < deadlineNanos && !eagerLoadOrder.isEmpty()) {
             ChunkCoordIntPair coord = eagerLoadOrder.get(eagerLoadOrder.size() - 1);
 
             EagerCubeLoadContainer container = eagerLoads.get(coord);
@@ -339,7 +348,7 @@ public class CubeProviderServer extends ChunkProviderServer
             Iterator<EagerCubeLoadRequest> cubeIter = container.cubes.values()
                 .iterator();
 
-            while ((System.nanoTime() - start) < MAX_NS_SPENT_LOADING && cubeIter.hasNext()) {
+            while (System.nanoTime() < deadlineNanos && cubeIter.hasNext()) {
                 EagerCubeLoadRequest request = cubeIter.next();
 
                 cubeIter.remove();
@@ -403,7 +412,7 @@ public class CubeProviderServer extends ChunkProviderServer
             loadTimeAccumulator = 0;
         }
 
-        if (delta > MAX_NS_SPENT_LOADING * 2) {
+        if (minimumPass && delta > MIN_NS_SPENT_LOADING * 2) {
             CubicChunks.LOGGER.warn("Spent {} ms loading the world this tick", delta / 1e6);
         }
 
