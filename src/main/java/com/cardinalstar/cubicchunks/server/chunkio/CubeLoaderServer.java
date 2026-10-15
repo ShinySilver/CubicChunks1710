@@ -832,6 +832,12 @@ public class CubeLoaderServer implements ICubeLoader {
                         "Generated a cube without generating its column: this is an invalid state");
                 }
 
+                if (result.cubeOpacity != null) {
+                    ((com.cardinalstar.cubicchunks.api.IColumn) this.column.column).getOpacityIndex()
+                        .addCubeOpacity(pos.getY(), result.cubeOpacity);
+                    cube.setSurfaceTracked(true);
+                }
+
                 // Alert everything that this cube was generated
                 onCubeLoaded();
 

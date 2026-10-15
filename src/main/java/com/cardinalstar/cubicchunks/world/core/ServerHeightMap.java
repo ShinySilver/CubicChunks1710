@@ -38,6 +38,85 @@ import io.netty.buffer.PooledByteBufAllocator;
 @ParametersAreNonnullByDefault
 public class ServerHeightMap implements IHeightMap {
 
+    @Override
+    public void addCubeOpacity(int cubeY, short[] opaqueColumns) {
+        if (opaqueColumns.length != Cube.SIZE * Cube.SIZE)
+            throw new IllegalArgumentException("expected 256 opacity columns");
+        int minimumY = cubeY * Cube.SIZE;
+        for (int localX = 0; localX < Cube.SIZE; localX++) {
+            for (int localZ = 0; localZ < Cube.SIZE; localZ++) {
+                int xzIndex = getIndex(localX, localZ);
+                int mask = opaqueColumns[localZ * Cube.SIZE + localX] & 0xffff;
+                if (mask == 0) continue;
+                mergeOpacityMask(xzIndex, minimumY, mask);
+            }
+        }
+        this.heightMapLowest = Coords.NO_HEIGHT;
+    }
+
+    private void mergeOpacityMask(int xzIndex, int minimumY, int mask) {
+        int[] oldSegments = this.segments[xzIndex];
+        int oldIntervalCapacity = oldSegments == null ? 1 : (getLastSegmentIndex(oldSegments) + 2) / 2;
+        int[] starts = new int[Math.max(18, oldIntervalCapacity * 2 + Cube.SIZE)];
+        int count = 0;
+        if (this.ymin[xzIndex] != Coords.NO_HEIGHT) {
+            if (oldSegments == null) {
+                starts[count++] = this.ymin[xzIndex];
+                starts[count++] = this.ymax.get(xzIndex) + 1;
+            } else {
+                int last = getLastSegmentIndex(oldSegments);
+                for (int i = 0; i <= last; i += 2) {
+                    starts[count++] = oldSegments[i];
+                    starts[count++] = i == last ? this.ymax.get(xzIndex) + 1 : oldSegments[i + 1];
+                }
+            }
+        }
+        for (int bit = 0; bit < Cube.SIZE;) {
+            if ((mask & 1 << bit) == 0) {
+                bit++;
+                continue;
+            }
+            int start = bit++;
+            while (bit < Cube.SIZE && (mask & 1 << bit) != 0) bit++;
+            if (count + 2 > starts.length) starts = java.util.Arrays.copyOf(starts, starts.length * 2);
+            starts[count++] = minimumY + start;
+            starts[count++] = minimumY + bit;
+        }
+        for (int i = 2; i < count; i += 2) {
+            int start = starts[i];
+            int end = starts[i + 1];
+            int insertion = i;
+            while (insertion > 0 && starts[insertion - 2] > start) {
+                starts[insertion] = starts[insertion - 2];
+                starts[insertion + 1] = starts[insertion - 1];
+                insertion -= 2;
+            }
+            starts[insertion] = start;
+            starts[insertion + 1] = end;
+        }
+        int merged = 0;
+        for (int i = 0; i < count; i += 2) {
+            int start = starts[i];
+            int end = starts[i + 1];
+            if (merged != 0 && start <= starts[merged - 1]) {
+                starts[merged - 1] = Math.max(starts[merged - 1], end);
+            } else {
+                starts[merged++] = start;
+                starts[merged++] = end;
+            }
+        }
+        this.ymin[xzIndex] = starts[0];
+        this.ymax.set(xzIndex, starts[merged - 1] - 1);
+        if (merged == 2) {
+            this.segments[xzIndex] = null;
+            return;
+        }
+        int[] encoded = new int[merged - 1];
+        encoded[0] = starts[0];
+        for (int i = 1; i < merged - 1; i++) encoded[i] = starts[i];
+        this.segments[xzIndex] = encoded;
+    }
+
     /**
      * Special value to indicate the absence of a segment in the segments arrays.
      * Since all integer values might represent a valid segment, an unlikely value to occur has been chosen. It

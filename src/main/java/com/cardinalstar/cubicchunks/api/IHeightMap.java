@@ -26,6 +26,27 @@ import javax.annotation.ParametersAreNonnullByDefault;
 public interface IHeightMap {
 
     /**
+     * Adds the opaque blocks of one generated cube to this column's opacity index.
+     *
+     * <p>
+     * Each entry is a 16-bit local-Y mask for {@code localZ * 16 + localX}. Implementations may override this to
+     * merge whole opacity runs. The default preserves compatibility by replaying opaque blocks individually.
+     * </p>
+     */
+    default void addCubeOpacity(int cubeY, short[] opaqueColumns) {
+        if (opaqueColumns.length != 16 * 16) throw new IllegalArgumentException("expected 256 opacity columns");
+        int minimumY = cubeY * 16;
+        for (int localX = 0; localX < 16; localX++) {
+            for (int localZ = 0; localZ < 16; localZ++) {
+                int mask = opaqueColumns[localZ * 16 + localX] & 0xffff;
+                for (int localY = 0; localY < 16; localY++) {
+                    if ((mask & 1 << localY) != 0) onOpacityChange(localX, minimumY + localY, localZ, 255);
+                }
+            }
+        }
+    }
+
+    /**
      * Sets the opacity at the given position to the given value.
      *
      * @param localX  local block x-coordinate (0..15)
