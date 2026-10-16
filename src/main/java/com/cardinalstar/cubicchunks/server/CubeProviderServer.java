@@ -504,11 +504,18 @@ public class CubeProviderServer extends ChunkProviderServer
         @Getter
         private Requirement effort;
         @Getter
+        private final EagerLoadProvenance provenance;
+        @Getter
         private boolean completed, cancelled;
 
         public EagerCubeLoadRequest(CubePos pos, Requirement effort) {
+            this(pos, effort, EagerLoadProvenance.EXPLICIT);
+        }
+
+        public EagerCubeLoadRequest(CubePos pos, Requirement effort, EagerLoadProvenance provenance) {
             this.pos = pos;
             this.effort = effort;
+            this.provenance = provenance;
         }
 
         public void cancel() {
@@ -549,6 +556,15 @@ public class CubeProviderServer extends ChunkProviderServer
     }
 
     public EagerCubeLoadRequest loadCubeEagerly(int x, int y, int z, Requirement effort) {
+        return loadCubeEagerly(x, y, z, effort, EagerLoadProvenance.EXPLICIT);
+    }
+
+    public EagerCubeLoadRequest loadCubeEagerlySpeculatively(int x, int y, int z, Requirement effort) {
+        return loadCubeEagerly(x, y, z, effort, EagerLoadProvenance.PLAYER_VIEW);
+    }
+
+    private EagerCubeLoadRequest loadCubeEagerly(int x, int y, int z, Requirement effort,
+        EagerLoadProvenance provenance) {
         CubePos pos = new CubePos(x, y, z);
 
         ChunkCoordIntPair coord = new ChunkCoordIntPair(x, z);
@@ -561,13 +577,18 @@ public class CubeProviderServer extends ChunkProviderServer
             eagerLoadOrder.add(coord);
         }
 
-        EagerCubeLoadRequest request = new EagerCubeLoadRequest(pos, effort);
+        EagerCubeLoadRequest request = new EagerCubeLoadRequest(pos, effort, provenance);
 
         container.add(request);
 
         cubeLoader.preloadCube(pos, CubeInitLevel.fromRequirement(effort));
 
         return request;
+    }
+
+    public enum EagerLoadProvenance {
+        EXPLICIT,
+        PLAYER_VIEW
     }
 
     @Nullable

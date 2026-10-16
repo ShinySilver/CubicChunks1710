@@ -411,7 +411,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
             var request = cubeLoadRequests.get(x, y, z);
 
             if (request == null || request.isCompleted()) {
-                cubeLoadRequests.put(provider.loadCubeEagerly(x, y, z, Requirement.LIGHT));
+                cubeLoadRequests.put(provider.loadCubeEagerlySpeculatively(x, y, z, Requirement.LIGHT));
             }
         } else {
             player.sync.onCubeMarkedDirty(x, y, z);
