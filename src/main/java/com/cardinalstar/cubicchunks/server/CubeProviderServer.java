@@ -54,6 +54,7 @@ import com.cardinalstar.cubicchunks.api.XYZAddressable;
 import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator;
 import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
 import com.cardinalstar.cubicchunks.api.worldgen.IWorldGenerator;
+import com.cardinalstar.cubicchunks.debug.CCProfiler;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeInitLevel;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderCallback;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderServer;
@@ -367,6 +368,7 @@ public class CubeProviderServer extends ChunkProviderServer
                     && worldGenerator instanceof ISpeculativeCubeGenerator speculative) {
                     SpeculativeCubeHint hint = speculative
                         .classifyCube(request.pos.getX(), request.pos.getY(), request.pos.getZ());
+                    CCProfiler.recordClassification(hint);
                     ((CubicPlayerManager) worldServer.getPlayerManager())
                         .onSpeculativeCubeClassified(request.pos, hint);
                     notifyPlayerRequestCompleted(request);
@@ -374,6 +376,8 @@ public class CubeProviderServer extends ChunkProviderServer
                 }
 
                 cubeLoader.pauseLoadCalls();
+
+                CCProfiler.recordEagerLoadAttempt();
 
                 Cube cube = cubeLoader
                     .getCube(request.pos.getX(), request.pos.getY(), request.pos.getZ(), request.effort);
@@ -405,6 +409,8 @@ public class CubeProviderServer extends ChunkProviderServer
 
         long end = System.nanoTime();
         long delta = end - start;
+
+        CCProfiler.recordEagerPass(delta, processed, eagerLoadOrder.size(), startCols);
 
         loadTimeAccumulator += delta;
 

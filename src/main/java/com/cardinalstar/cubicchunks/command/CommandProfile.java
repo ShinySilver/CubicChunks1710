@@ -74,6 +74,34 @@ public final class CommandProfile extends CubicCommandBase {
                     millis(s.decodeNanos),
                     millis(s.installNanos),
                     s.renderInvalidations)));
+        sender.addChatMessage(
+            new ChatComponentText(
+                String.format(
+                    Locale.ROOT,
+                    "loader: %.1fms active (%.1f%%), %,d requests / %,d loads, queue %,d (peak %,d)",
+                    millis(s.eagerActiveNanos),
+                    s.elapsedNanos == 0 ? 0D : 100D * s.eagerActiveNanos / s.elapsedNanos,
+                    s.eagerRequests,
+                    s.eagerLoadAttempts,
+                    s.eagerQueueColumns,
+                    s.peakEagerQueueColumns)));
+        sender.addChatMessage(
+            new ChatComponentText(
+                String.format(
+                    Locale.ROOT,
+                    "classified: %,d air / %,d sealed / %,d generate; %,d lit",
+                    s.classifiedAir,
+                    s.classifiedSealed,
+                    s.classifiedGenerate,
+                    s.litCubes)));
+        sender.addChatMessage(
+            new ChatComponentText(
+                String.format(
+                    Locale.ROOT,
+                    "renderer: %,d mesh rebuilds in %.1fms (%.1f%% of elapsed)",
+                    s.renderBuilds,
+                    millis(s.renderBuildNanos),
+                    s.elapsedNanos == 0 ? 0D : 100D * s.renderBuildNanos / s.elapsedNanos)));
     }
 
     private static double millis(long nanos) {

@@ -2,7 +2,9 @@ package com.cardinalstar.cubicchunks.mixin.early.client;
 
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.renderer.RenderGlobal;
+import net.minecraft.client.renderer.WorldRenderer;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.util.MathHelper;
 
 import org.spongepowered.asm.mixin.Mixin;
@@ -16,6 +18,7 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.cardinalstar.cubicchunks.CubicChunksConfig;
+import com.cardinalstar.cubicchunks.debug.CCProfiler;
 import com.llamalad7.mixinextras.expression.Definition;
 import com.llamalad7.mixinextras.expression.Expression;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
@@ -27,6 +30,24 @@ import com.llamalad7.mixinextras.sugar.ref.LocalIntRef;
 
 @Mixin(RenderGlobal.class)
 public class MixinRenderGlobal {
+
+    @WrapOperation(
+        method = "updateRenderers",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/WorldRenderer;updateRenderer(Lnet/minecraft/entity/EntityLivingBase;)V"))
+    private void profileRenderBuild(WorldRenderer renderer, EntityLivingBase entity, Operation<Void> original) {
+        if (!CCProfiler.isActive()) {
+            original.call(renderer, entity);
+            return;
+        }
+        long started = System.nanoTime();
+        try {
+            original.call(renderer, entity);
+        } finally {
+            CCProfiler.recordRenderBuild(System.nanoTime() - started);
+        }
+    }
 
     @Shadow
     private int renderChunksTall;

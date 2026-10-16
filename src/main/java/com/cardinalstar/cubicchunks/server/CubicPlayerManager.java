@@ -45,6 +45,7 @@ import com.cardinalstar.cubicchunks.api.XYZAddressable;
 import com.cardinalstar.cubicchunks.api.XYZMap;
 import com.cardinalstar.cubicchunks.api.util.Box;
 import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
+import com.cardinalstar.cubicchunks.debug.CCProfiler;
 import com.cardinalstar.cubicchunks.mixin.api.ICubicWorldInternal;
 import com.cardinalstar.cubicchunks.mixin.api.ICubicWorldInternal.Server;
 import com.cardinalstar.cubicchunks.server.CubeProviderServer.EagerCubeLoadRequest;
@@ -230,6 +231,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         if (newLevel.ordinal() >= CubeInitLevel.Generated.ordinal() && newLevel != CubeInitLevel.Lit)
             updateReachability(cube);
         if (newLevel == CubeInitLevel.Lit) {
+            CCProfiler.recordLitCube();
             ReachabilityNode node = node(cube);
             updateReachability(node);
             var old = loadedCubes.put(cube);
