@@ -23,6 +23,7 @@ package com.cardinalstar.cubicchunks.server;
 import static com.cardinalstar.cubicchunks.util.Coords.blockToCube;
 import static net.minecraft.util.MathHelper.clamp_int;
 
+import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -71,6 +72,16 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
     private final XYZMap<EagerCubeLoadRequest> cubeLoadRequests = new XYZMap<>();
 
     private final XYZMap<Cube> loadedCubes = new XYZMap<>();
+    /** Cubes whose conservatively open faces may extend speculative player-view loading. */
+    private final XYZMap<Cube> transmissibleCubes = new XYZMap<>();
+
+    private static final int[] REACH_DX = { -1, 1, 0, 0, 0, 0 };
+    private static final int[] REACH_DY = { 0, 0, -1, 1, 0, 0 };
+    private static final int[] REACH_DZ = { 0, 0, 0, 0, -1, 1 };
+    private static final byte[] EXIT_FACE = { Cube.FACE_NEG_X, Cube.FACE_POS_X, Cube.FACE_NEG_Y, Cube.FACE_POS_Y,
+        Cube.FACE_NEG_Z, Cube.FACE_POS_Z };
+    private static final byte[] ENTRY_FACE = { Cube.FACE_POS_X, Cube.FACE_NEG_X, Cube.FACE_POS_Y, Cube.FACE_NEG_Y,
+        Cube.FACE_POS_Z, Cube.FACE_NEG_Z };
 
     private int horizontalViewDistance;
     private int verticalViewDistance;
@@ -205,6 +216,8 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
 
     @Override
     public void onCubeGenerated(Cube cube, CubeInitLevel newLevel) {
+        if (newLevel.ordinal() >= CubeInitLevel.Generated.ordinal() && newLevel != CubeInitLevel.Lit)
+            updateReachability(cube);
         if (newLevel == CubeInitLevel.Lit) {
             var old = loadedCubes.put(cube);
 
@@ -407,12 +420,14 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
     private void onPlayerStartedViewingCube(WatchingPlayer player, int x, int y, int z) {
         Cube cube = provider.getLoadedCube(x, y, z);
 
-        if (cube == null || !cube.isInitializedToLevel(CubeInitLevel.Lit)) {
+        if (cube == null || !cube.isInitializedToLevel(CubeInitLevel.Generated)) {
             var request = cubeLoadRequests.get(x, y, z);
 
             if (request == null || request.isCompleted()) {
-                cubeLoadRequests.put(provider.loadCubeEagerlySpeculatively(x, y, z, Requirement.LIGHT));
+                cubeLoadRequests.put(provider.loadCubeEagerlySpeculatively(x, y, z, Requirement.GENERATE));
             }
+        } else if (!cube.isInitializedToLevel(CubeInitLevel.Lit)) {
+            updateReachability(cube);
         } else {
             player.sync.onCubeMarkedDirty(x, y, z);
         }
@@ -422,12 +437,88 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         player.sync.onCubeMarkedDirty(x, y, z);
 
         if (!isCubeWatched(x, y, z)) {
+            transmissibleCubes.remove(x, y, z);
             var request = cubeLoadRequests.remove(x, y, z);
 
             if (request != null) {
                 request.cancel();
             }
         }
+    }
+
+    /** Reconsiders a generated cube after generation or conservative face-mask invalidation. */
+    public void onCubeFacesOpened(Cube cube) {
+        if (!isCubeWatched(cube.getX(), cube.getY(), cube.getZ())) return;
+        if (transmissibleCubes.get(cube.getX(), cube.getY(), cube.getZ()) != null) {
+            propagateFrom(cube);
+        } else {
+            updateReachability(cube);
+        }
+    }
+
+    private void updateReachability(Cube cube) {
+        if (!isCubeWatched(cube.getX(), cube.getY(), cube.getZ())) return;
+        if (isImmediatePlayerCube(cube)) {
+            activate(cube);
+            return;
+        }
+        for (int direction = 0; direction < 6; direction++) {
+            Cube source = transmissibleCubes.get(
+                cube.getX() - REACH_DX[direction],
+                cube.getY() - REACH_DY[direction],
+                cube.getZ() - REACH_DZ[direction]);
+            if (source == null || isSealed(source, EXIT_FACE[direction])) continue;
+            ensureLit(cube); // The first opaque cube is the visible blocker halo.
+            if (!isSealed(cube, ENTRY_FACE[direction])) activate(cube);
+            return;
+        }
+    }
+
+    private void activate(Cube first) {
+        ArrayDeque<Cube> pending = new ArrayDeque<>();
+        if (transmissibleCubes.put(first) == null) pending.add(first);
+        while (!pending.isEmpty()) {
+            Cube source = pending.removeFirst();
+            ensureLit(source);
+            for (int direction = 0; direction < 6; direction++) {
+                if (isSealed(source, EXIT_FACE[direction])) continue;
+                int x = source.getX() + REACH_DX[direction];
+                int y = source.getY() + REACH_DY[direction];
+                int z = source.getZ() + REACH_DZ[direction];
+                if (!isCubeWatched(x, y, z)) continue;
+                Cube target = provider.getLoadedCube(x, y, z);
+                if (target == null || !target.isInitializedToLevel(CubeInitLevel.Generated)) continue;
+                ensureLit(target);
+                if (!isSealed(target, ENTRY_FACE[direction]) && transmissibleCubes.put(target) == null)
+                    pending.add(target);
+            }
+        }
+    }
+
+    private void propagateFrom(Cube cube) {
+        transmissibleCubes.remove(cube);
+        activate(cube);
+    }
+
+    private void ensureLit(Cube cube) {
+        if (cube.isInitializedToLevel(CubeInitLevel.Lit)) return;
+        EagerCubeLoadRequest old = cubeLoadRequests.remove(cube);
+        if (old != null) old.cancel();
+        cubeLoadRequests
+            .put(provider.loadCubeEagerlySpeculatively(cube.getX(), cube.getY(), cube.getZ(), Requirement.LIGHT));
+    }
+
+    private boolean isImmediatePlayerCube(Cube cube) {
+        for (WatchingPlayer player : players.getPlayerArray()) {
+            CubePos pos = player.getManagedCubePos();
+            if (Math.abs(pos.getX() - cube.getX()) <= 1 && Math.abs(pos.getY() - cube.getY()) <= 1
+                && Math.abs(pos.getZ() - cube.getZ()) <= 1) return true;
+        }
+        return false;
+    }
+
+    private static boolean isSealed(Cube cube, byte face) {
+        return (cube.getSealedFaces() & face) != 0;
     }
 
     public boolean isColumnWatched(int columnX, int columnZ) {

@@ -589,6 +589,8 @@ public class Cube implements ICube {
         if ((sealedFaces & clear) != 0) {
             sealedFaces &= ~clear;
             markDirty();
+            if (world instanceof WorldServer)
+                ((CubicPlayerManager) ((WorldServer) world).getPlayerManager()).onCubeFacesOpened(this);
         }
     }
 
