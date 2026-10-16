@@ -40,12 +40,14 @@ import org.joml.Vector3ic;
 
 import com.cardinalstar.cubicchunks.CubicChunks;
 import com.cardinalstar.cubicchunks.api.XYZMap;
+import com.cardinalstar.cubicchunks.api.XYZAddressable;
 import com.cardinalstar.cubicchunks.api.util.Box;
 import com.cardinalstar.cubicchunks.mixin.api.ICubicWorldInternal;
 import com.cardinalstar.cubicchunks.mixin.api.ICubicWorldInternal.Server;
 import com.cardinalstar.cubicchunks.server.CubeProviderServer.EagerCubeLoadRequest;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeInitLevel;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderCallback;
+import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
 import com.cardinalstar.cubicchunks.util.CubePos;
 import com.cardinalstar.cubicchunks.util.CubeStatusVisualizer;
 import com.cardinalstar.cubicchunks.util.CubeStatusVisualizer.CubeStatus;
@@ -73,7 +75,8 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
 
     private final XYZMap<Cube> loadedCubes = new XYZMap<>();
     /** Cubes whose conservatively open faces may extend speculative player-view loading. */
-    private final XYZMap<Cube> transmissibleCubes = new XYZMap<>();
+    private final XYZMap<ReachabilityNode> classifiedCubes = new XYZMap<>();
+    private final XYZMap<ReachabilityNode> transmissibleCubes = new XYZMap<>();
 
     private static final int[] REACH_DX = { -1, 1, 0, 0, 0, 0 };
     private static final int[] REACH_DY = { 0, 0, -1, 1, 0, 0 };
@@ -219,6 +222,8 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         if (newLevel.ordinal() >= CubeInitLevel.Generated.ordinal() && newLevel != CubeInitLevel.Lit)
             updateReachability(cube);
         if (newLevel == CubeInitLevel.Lit) {
+            ReachabilityNode node = node(cube);
+            if (isImmediatePlayerCube(cube)) activate(node);
             var old = loadedCubes.put(cube);
 
             if (old != null && old != cube) {
@@ -429,6 +434,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         } else if (!cube.isInitializedToLevel(CubeInitLevel.Lit)) {
             updateReachability(cube);
         } else {
+            if (isImmediatePlayerCube(cube)) activate(node(cube));
             player.sync.onCubeMarkedDirty(x, y, z);
         }
     }
@@ -438,6 +444,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
 
         if (!isCubeWatched(x, y, z)) {
             transmissibleCubes.remove(x, y, z);
+            classifiedCubes.remove(x, y, z);
             var request = cubeLoadRequests.remove(x, y, z);
 
             if (request != null) {
@@ -449,36 +456,50 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
     /** Reconsiders a generated cube after generation or conservative face-mask invalidation. */
     public void onCubeFacesOpened(Cube cube) {
         if (!isCubeWatched(cube.getX(), cube.getY(), cube.getZ())) return;
+        ReachabilityNode node = node(cube);
         if (transmissibleCubes.get(cube.getX(), cube.getY(), cube.getZ()) != null) {
-            propagateFrom(cube);
+            propagateFrom(node);
         } else {
-            updateReachability(cube);
+            updateReachability(node);
         }
+    }
+
+    public void onSpeculativeCubeClassified(CubePos pos, SpeculativeCubeHint hint) {
+        EagerCubeLoadRequest request = cubeLoadRequests.remove(pos);
+        if (request != null) request.cancel();
+        if (!isCubeWatched(pos.getX(), pos.getY(), pos.getZ())) return;
+        ReachabilityNode node = new ReachabilityNode(pos.getX(), pos.getY(), pos.getZ(), hint, null);
+        classifiedCubes.put(node);
+        updateReachability(node);
     }
 
     private void updateReachability(Cube cube) {
-        if (!isCubeWatched(cube.getX(), cube.getY(), cube.getZ())) return;
-        if (isImmediatePlayerCube(cube)) {
-            activate(cube);
+        updateReachability(node(cube));
+    }
+
+    private void updateReachability(ReachabilityNode node) {
+        if (!isCubeWatched(node.getX(), node.getY(), node.getZ())) return;
+        if (node.cube != null && isImmediatePlayerCube(node.cube)) {
+            activate(node);
             return;
         }
         for (int direction = 0; direction < 6; direction++) {
-            Cube source = transmissibleCubes.get(
-                cube.getX() - REACH_DX[direction],
-                cube.getY() - REACH_DY[direction],
-                cube.getZ() - REACH_DZ[direction]);
+            ReachabilityNode source = transmissibleCubes.get(
+                node.getX() - REACH_DX[direction],
+                node.getY() - REACH_DY[direction],
+                node.getZ() - REACH_DZ[direction]);
             if (source == null || isSealed(source, EXIT_FACE[direction])) continue;
-            ensureLit(cube); // The first opaque cube is the visible blocker halo.
-            if (!isSealed(cube, ENTRY_FACE[direction])) activate(cube);
+            ensureLit(node); // The first opaque cube is the visible blocker halo.
+            if (!isSealed(node, ENTRY_FACE[direction])) activate(node);
             return;
         }
     }
 
-    private void activate(Cube first) {
-        ArrayDeque<Cube> pending = new ArrayDeque<>();
+    private void activate(ReachabilityNode first) {
+        ArrayDeque<ReachabilityNode> pending = new ArrayDeque<>();
         if (transmissibleCubes.put(first) == null) pending.add(first);
         while (!pending.isEmpty()) {
-            Cube source = pending.removeFirst();
+            ReachabilityNode source = pending.removeFirst();
             ensureLit(source);
             for (int direction = 0; direction < 6; direction++) {
                 if (isSealed(source, EXIT_FACE[direction])) continue;
@@ -486,8 +507,12 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
                 int y = source.getY() + REACH_DY[direction];
                 int z = source.getZ() + REACH_DZ[direction];
                 if (!isCubeWatched(x, y, z)) continue;
-                Cube target = provider.getLoadedCube(x, y, z);
-                if (target == null || !target.isInitializedToLevel(CubeInitLevel.Generated)) continue;
+                ReachabilityNode target = classifiedCubes.get(x, y, z);
+                if (target == null) {
+                    Cube loaded = provider.getLoadedCube(x, y, z);
+                    if (loaded == null || !loaded.isInitializedToLevel(CubeInitLevel.Generated)) continue;
+                    target = node(loaded);
+                }
                 ensureLit(target);
                 if (!isSealed(target, ENTRY_FACE[direction]) && transmissibleCubes.put(target) == null)
                     pending.add(target);
@@ -495,17 +520,18 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         }
     }
 
-    private void propagateFrom(Cube cube) {
-        transmissibleCubes.remove(cube);
-        activate(cube);
+    private void propagateFrom(ReachabilityNode node) {
+        transmissibleCubes.remove(node);
+        activate(node);
     }
 
-    private void ensureLit(Cube cube) {
-        if (cube.isInitializedToLevel(CubeInitLevel.Lit)) return;
-        EagerCubeLoadRequest old = cubeLoadRequests.remove(cube);
+    private void ensureLit(ReachabilityNode node) {
+        if (node.hint == SpeculativeCubeHint.VIRTUAL_AIR) return;
+        if (node.cube != null && node.cube.isInitializedToLevel(CubeInitLevel.Lit)) return;
+        EagerCubeLoadRequest old = cubeLoadRequests.remove(node);
         if (old != null) old.cancel();
-        cubeLoadRequests
-            .put(provider.loadCubeEagerlySpeculatively(cube.getX(), cube.getY(), cube.getZ(), Requirement.LIGHT));
+        cubeLoadRequests.put(
+            provider.loadCubeEagerlySpeculatively(node.getX(), node.getY(), node.getZ(), Requirement.LIGHT));
     }
 
     private boolean isImmediatePlayerCube(Cube cube) {
@@ -517,8 +543,40 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         return false;
     }
 
-    private static boolean isSealed(Cube cube, byte face) {
-        return (cube.getSealedFaces() & face) != 0;
+    private ReachabilityNode node(Cube cube) {
+        ReachabilityNode node = new ReachabilityNode(
+            cube.getX(), cube.getY(), cube.getZ(), SpeculativeCubeHint.GENERATE, cube);
+        classifiedCubes.put(node);
+        return node;
+    }
+
+    private static boolean isSealed(ReachabilityNode node, byte face) {
+        return ((node.cube == null ? node.hint == SpeculativeCubeHint.SEALED ? Cube.ALL_FACES : 0
+            : node.cube.getSealedFaces()) & face) != 0;
+    }
+
+    private static final class ReachabilityNode implements XYZAddressable {
+
+        private final int x, y, z;
+        private final SpeculativeCubeHint hint;
+        private final Cube cube;
+
+        ReachabilityNode(int x, int y, int z, SpeculativeCubeHint hint, Cube cube) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.hint = hint;
+            this.cube = cube;
+        }
+
+        @Override
+        public int getX() { return x; }
+
+        @Override
+        public int getY() { return y; }
+
+        @Override
+        public int getZ() { return z; }
     }
 
     public boolean isColumnWatched(int columnX, int columnZ) {

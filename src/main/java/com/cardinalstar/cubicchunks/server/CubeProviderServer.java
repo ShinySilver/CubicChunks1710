@@ -52,6 +52,8 @@ import com.cardinalstar.cubicchunks.api.IColumn;
 import com.cardinalstar.cubicchunks.api.ICube;
 import com.cardinalstar.cubicchunks.api.XYZAddressable;
 import com.cardinalstar.cubicchunks.api.worldgen.IWorldGenerator;
+import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator;
+import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeInitLevel;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderCallback;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderServer;
@@ -357,6 +359,15 @@ public class CubeProviderServer extends ChunkProviderServer
                 processed++;
 
                 if (request.isCancelled()) continue;
+
+                if (request.provenance == EagerLoadProvenance.PLAYER_VIEW
+                    && request.effort == Requirement.GENERATE
+                    && worldGenerator instanceof ISpeculativeCubeGenerator speculative) {
+                    SpeculativeCubeHint hint = speculative
+                        .classifyCube(request.pos.getX(), request.pos.getY(), request.pos.getZ());
+                    ((CubicPlayerManager) worldServer.getPlayerManager()).onSpeculativeCubeClassified(request.pos, hint);
+                    continue;
+                }
 
                 cubeLoader.pauseLoadCalls();
 
