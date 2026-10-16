@@ -120,7 +120,7 @@ public class MixinRenderGlobal {
     // render sections, so process a larger batch while retaining a finite per-frame bound.
     @ModifyConstant(method = "updateRenderers", constant = @Constant(intValue = 2), require = 1)
     private int increaseDistantRendererUpdates(int original) {
-        return 96;
+        return original * 96;
     }
 
     @Definition(
