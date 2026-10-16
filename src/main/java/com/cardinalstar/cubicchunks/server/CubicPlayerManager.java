@@ -24,7 +24,9 @@ import static com.cardinalstar.cubicchunks.util.Coords.blockToCube;
 import static net.minecraft.util.MathHelper.clamp_int;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import javax.annotation.ParametersAreNonnullByDefault;
@@ -39,15 +41,15 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3ic;
 
 import com.cardinalstar.cubicchunks.CubicChunks;
-import com.cardinalstar.cubicchunks.api.XYZMap;
 import com.cardinalstar.cubicchunks.api.XYZAddressable;
+import com.cardinalstar.cubicchunks.api.XYZMap;
 import com.cardinalstar.cubicchunks.api.util.Box;
+import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
 import com.cardinalstar.cubicchunks.mixin.api.ICubicWorldInternal;
 import com.cardinalstar.cubicchunks.mixin.api.ICubicWorldInternal.Server;
 import com.cardinalstar.cubicchunks.server.CubeProviderServer.EagerCubeLoadRequest;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeInitLevel;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderCallback;
-import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
 import com.cardinalstar.cubicchunks.util.CubePos;
 import com.cardinalstar.cubicchunks.util.CubeStatusVisualizer;
 import com.cardinalstar.cubicchunks.util.CubeStatusVisualizer.CubeStatus;
@@ -72,6 +74,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
     private final CubeProviderServer provider;
 
     private final XYZMap<EagerCubeLoadRequest> cubeLoadRequests = new XYZMap<>();
+    private final XYZMap<DeferredCubeRequest> deferredCubeLoadRequests = new XYZMap<>();
 
     private final XYZMap<Cube> loadedCubes = new XYZMap<>();
     /** Cubes whose conservatively open faces may extend speculative player-view loading. */
@@ -88,6 +91,10 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
 
     private int horizontalViewDistance;
     private int verticalViewDistance;
+
+    /** Optional packetless player view used by the offline worldgen profiler. */
+    @Nullable
+    private HeadlessView headlessView;
 
     private long lastChunkInhabitedUpdate;
     private long lastCubeGc;
@@ -120,6 +127,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
     // CHECKED: 1.10.2-12.18.1.2092
     @Override
     public void updatePlayerInstances() {
+        flushDeferredCubeRequests();
         getWorldServer().theProfiler.startSection("Process light updates");
 
         ((ICubicWorldInternal) getWorldServer()).getLightingManager()
@@ -223,7 +231,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
             updateReachability(cube);
         if (newLevel == CubeInitLevel.Lit) {
             ReachabilityNode node = node(cube);
-            if (isImmediatePlayerCube(cube)) activate(node);
+            updateReachability(node);
             var old = loadedCubes.put(cube);
 
             if (old != null && old != cube) {
@@ -422,21 +430,115 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
             .doGC();
     }
 
-    private void onPlayerStartedViewingCube(WatchingPlayer player, int x, int y, int z) {
+    private void onPlayerStartedViewingCube(@Nullable WatchingPlayer player, int x, int y, int z) {
         Cube cube = provider.getLoadedCube(x, y, z);
 
         if (cube == null || !cube.isInitializedToLevel(CubeInitLevel.Generated)) {
             var request = cubeLoadRequests.get(x, y, z);
 
             if (request == null || request.isCompleted()) {
-                cubeLoadRequests.put(provider.loadCubeEagerlySpeculatively(x, y, z, Requirement.GENERATE));
+                requestCube(x, y, z, Requirement.GENERATE);
             }
         } else if (!cube.isInitializedToLevel(CubeInitLevel.Lit)) {
             updateReachability(cube);
         } else {
             if (isImmediatePlayerCube(cube)) activate(node(cube));
-            player.sync.onCubeMarkedDirty(x, y, z);
+            if (player != null) player.sync.onCubeMarkedDirty(x, y, z);
         }
+    }
+
+    /** Starts one packetless view which otherwise follows the normal player loading path exactly. */
+    public void startHeadlessView(CubePos center, int horizontalRadius, int verticalRadius) {
+        if (headlessView != null) throw new IllegalStateException("A headless player view is already active");
+        headlessView = new HeadlessView(center, horizontalRadius, verticalRadius);
+        CuboidalCubeSelector.INSTANCE.forAllVisibleCubes(
+            center,
+            horizontalRadius,
+            verticalRadius,
+            (x, y, z) -> onPlayerStartedViewingCube(null, x, y, z));
+    }
+
+    public boolean isHeadlessViewSettled() {
+        if (headlessView == null) return false;
+        if (deferredCubeLoadRequests.getSize() != 0) return false;
+        for (EagerCubeLoadRequest request : cubeLoadRequests)
+            if (!request.isCompleted() && !request.isCancelled()) return false;
+        return true;
+    }
+
+    public HeadlessViewStats getHeadlessViewStats() {
+        if (headlessView == null) throw new IllegalStateException("No headless player view is active");
+        int classifiedAir = 0;
+        int classifiedSolid = 0;
+        int classifiedGenerate = 0;
+        int reachableNotLit = 0;
+        StringBuilder unresolved = new StringBuilder();
+        for (ReachabilityNode node : classifiedCubes) {
+            if (!headlessView.contains(node.getX(), node.getY(), node.getZ())) continue;
+            if (node.hint == SpeculativeCubeHint.VIRTUAL_AIR) classifiedAir++;
+            else if (node.hint == SpeculativeCubeHint.SEALED) classifiedSolid++;
+            else classifiedGenerate++;
+            if (node.hint != SpeculativeCubeHint.VIRTUAL_AIR && isReachable(node)
+                && (node.cube == null || !node.cube.isInitializedToLevel(CubeInitLevel.Lit))) {
+                reachableNotLit++;
+                if (unresolved.length() < 512) unresolved.append(node.getX())
+                    .append(',')
+                    .append(node.getY())
+                    .append(',')
+                    .append(node.getZ())
+                    .append(':')
+                    .append(node.hint)
+                    .append(';');
+            }
+        }
+        int lit = 0;
+        int litBelowSeaMinus32 = 0;
+        int deepTransmissible = 0;
+        int deepFullySealed = 0;
+        int lowestLitCubeY = Integer.MAX_VALUE;
+        for (Cube cube : loadedCubes) {
+            if (!headlessView.contains(cube.getX(), cube.getY(), cube.getZ())) continue;
+            lit++;
+            if (cube.getY() * 16 + 15 < 63 - 32) {
+                litBelowSeaMinus32++;
+                if (transmissibleCubes.get(cube.getX(), cube.getY(), cube.getZ()) != null) deepTransmissible++;
+                if (cube.getSealedFaces() == Cube.ALL_FACES) deepFullySealed++;
+            }
+            lowestLitCubeY = Math.min(lowestLitCubeY, cube.getY());
+        }
+        return new HeadlessViewStats(
+            headlessView.volume(),
+            classifiedAir,
+            classifiedSolid,
+            classifiedGenerate,
+            lit,
+            transmissibleCubes.getSize(),
+            activeRequestCount(),
+            reachableNotLit,
+            litBelowSeaMinus32,
+            deepTransmissible,
+            deepFullySealed,
+            lowestLitCubeY == Integer.MAX_VALUE ? 0 : lowestLitCubeY,
+            unresolved.toString());
+    }
+
+    private int activeRequestCount() {
+        int active = deferredCubeLoadRequests.getSize();
+        for (EagerCubeLoadRequest request : cubeLoadRequests)
+            if (!request.isCompleted() && !request.isCancelled()) active++;
+        return active;
+    }
+
+    private boolean isReachable(ReachabilityNode node) {
+        if (headlessView != null && headlessView.isImmediate(node.getX(), node.getY(), node.getZ())) return true;
+        for (int direction = 0; direction < 6; direction++) {
+            ReachabilityNode source = transmissibleCubes.get(
+                node.getX() - REACH_DX[direction],
+                node.getY() - REACH_DY[direction],
+                node.getZ() - REACH_DZ[direction]);
+            if (source != null && !isSealed(source, EXIT_FACE[direction])) return true;
+        }
+        return false;
     }
 
     private void onPlayerStoppedViewingCube(WatchingPlayer player, int x, int y, int z) {
@@ -473,13 +575,23 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         updateReachability(node);
     }
 
+    public void onSpeculativeRequestCompleted(EagerCubeLoadRequest request) {
+        if (cubeLoadRequests.get(request.getX(), request.getY(), request.getZ()) == request)
+            cubeLoadRequests.remove(request);
+        if (request.getEffort() != Requirement.LIGHT) return;
+        Cube cube = provider.getLoadedCube(request.getX(), request.getY(), request.getZ());
+        ReachabilityNode classified = classifiedCubes.get(request.getX(), request.getY(), request.getZ());
+        if (cube != null && cube.isInitializedToLevel(CubeInitLevel.Lit)
+            && (classified == null || classified.cube != cube)) onCubeGenerated(cube, CubeInitLevel.Lit);
+    }
+
     private void updateReachability(Cube cube) {
         updateReachability(node(cube));
     }
 
     private void updateReachability(ReachabilityNode node) {
         if (!isCubeWatched(node.getX(), node.getY(), node.getZ())) return;
-        if (node.cube != null && isImmediatePlayerCube(node.cube)) {
+        if (isImmediatePlayerCube(node.getX(), node.getY(), node.getZ())) {
             activate(node);
             return;
         }
@@ -530,28 +642,55 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         if (node.cube != null && node.cube.isInitializedToLevel(CubeInitLevel.Lit)) return;
         EagerCubeLoadRequest old = cubeLoadRequests.remove(node);
         if (old != null) old.cancel();
-        cubeLoadRequests.put(
-            provider.loadCubeEagerlySpeculatively(node.getX(), node.getY(), node.getZ(), Requirement.LIGHT));
+        if (deferredCubeLoadRequests.get(node.getX(), node.getY(), node.getZ()) == null)
+            deferredCubeLoadRequests.put(new DeferredCubeRequest(node.getX(), node.getY(), node.getZ()));
+    }
+
+    private void flushDeferredCubeRequests() {
+        if (deferredCubeLoadRequests.getSize() == 0) return;
+        List<DeferredCubeRequest> requests = new ArrayList<>(deferredCubeLoadRequests.getSize());
+        for (DeferredCubeRequest request : deferredCubeLoadRequests) requests.add(request);
+        for (DeferredCubeRequest request : requests) {
+            deferredCubeLoadRequests.remove(request);
+            requestCube(request.getX(), request.getY(), request.getZ(), Requirement.LIGHT);
+        }
+    }
+
+    private void requestCube(int x, int y, int z, Requirement requirement) {
+        EagerCubeLoadRequest request = provider.loadCubeEagerlySpeculatively(x, y, z, requirement);
+        cubeLoadRequests.put(request);
+        // Cached work may invoke its callback before loadCubeEagerlySpeculatively returns.
+        if (request.isCompleted() && cubeLoadRequests.get(x, y, z) == request) cubeLoadRequests.remove(request);
     }
 
     private boolean isImmediatePlayerCube(Cube cube) {
+        return isImmediatePlayerCube(cube.getX(), cube.getY(), cube.getZ());
+    }
+
+    private boolean isImmediatePlayerCube(int cubeX, int cubeY, int cubeZ) {
+        if (headlessView != null && headlessView.isImmediate(cubeX, cubeY, cubeZ)) return true;
         for (WatchingPlayer player : players.getPlayerArray()) {
             CubePos pos = player.getManagedCubePos();
-            if (Math.abs(pos.getX() - cube.getX()) <= 1 && Math.abs(pos.getY() - cube.getY()) <= 1
-                && Math.abs(pos.getZ() - cube.getZ()) <= 1) return true;
+            if (Math.abs(pos.getX() - cubeX) <= 1 && Math.abs(pos.getY() - cubeY) <= 1
+                && Math.abs(pos.getZ() - cubeZ) <= 1) return true;
         }
         return false;
     }
 
     private ReachabilityNode node(Cube cube) {
         ReachabilityNode node = new ReachabilityNode(
-            cube.getX(), cube.getY(), cube.getZ(), SpeculativeCubeHint.GENERATE, cube);
+            cube.getX(),
+            cube.getY(),
+            cube.getZ(),
+            SpeculativeCubeHint.GENERATE,
+            cube);
         classifiedCubes.put(node);
+        transmissibleCubes.remove(cube.getX(), cube.getY(), cube.getZ());
         return node;
     }
 
     private static boolean isSealed(ReachabilityNode node, byte face) {
-        return ((node.cube == null ? node.hint == SpeculativeCubeHint.SEALED ? Cube.ALL_FACES : 0
+        return ((node.cube == null ? node.hint == SpeculativeCubeHint.VIRTUAL_AIR ? 0 : Cube.ALL_FACES
             : node.cube.getSealedFaces()) & face) != 0;
     }
 
@@ -570,13 +709,45 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         }
 
         @Override
-        public int getX() { return x; }
+        public int getX() {
+            return x;
+        }
 
         @Override
-        public int getY() { return y; }
+        public int getY() {
+            return y;
+        }
 
         @Override
-        public int getZ() { return z; }
+        public int getZ() {
+            return z;
+        }
+    }
+
+    private static final class DeferredCubeRequest implements XYZAddressable {
+
+        private final int x, y, z;
+
+        DeferredCubeRequest(int x, int y, int z) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+
+        @Override
+        public int getX() {
+            return x;
+        }
+
+        @Override
+        public int getY() {
+            return y;
+        }
+
+        @Override
+        public int getZ() {
+            return z;
+        }
     }
 
     public boolean isColumnWatched(int columnX, int columnZ) {
@@ -596,6 +767,7 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
     }
 
     public boolean isCubeWatched(int cubeX, int cubeY, int cubeZ) {
+        if (headlessView != null && headlessView.contains(cubeX, cubeY, cubeZ)) return true;
         for (var player : players.getPlayerArray()) {
             if (player.isWatchingCube(cubeX, cubeY, cubeZ)) {
                 return true;
@@ -603,6 +775,58 @@ public class CubicPlayerManager extends PlayerManager implements CubeLoaderCallb
         }
 
         return false;
+    }
+
+    public static final class HeadlessViewStats {
+
+        public final int visible, virtualAir, sealed, generate, lit, transmissible, pending, reachableNotLit;
+        public final int litBelowSeaMinus32, deepTransmissible, deepFullySealed, lowestLitCubeY;
+        public final String unresolved;
+
+        HeadlessViewStats(int visible, int virtualAir, int sealed, int generate, int lit, int transmissible,
+            int pending, int reachableNotLit, int litBelowSeaMinus32, int deepTransmissible, int deepFullySealed,
+            int lowestLitCubeY, String unresolved) {
+            this.visible = visible;
+            this.virtualAir = virtualAir;
+            this.sealed = sealed;
+            this.generate = generate;
+            this.lit = lit;
+            this.transmissible = transmissible;
+            this.pending = pending;
+            this.reachableNotLit = reachableNotLit;
+            this.litBelowSeaMinus32 = litBelowSeaMinus32;
+            this.deepTransmissible = deepTransmissible;
+            this.deepFullySealed = deepFullySealed;
+            this.lowestLitCubeY = lowestLitCubeY;
+            this.unresolved = unresolved;
+        }
+    }
+
+    private static final class HeadlessView {
+
+        private final CubePos center;
+        private final int horizontalRadius, verticalRadius;
+
+        HeadlessView(CubePos center, int horizontalRadius, int verticalRadius) {
+            if (horizontalRadius < 1 || verticalRadius < 1) throw new IllegalArgumentException("Invalid view radius");
+            this.center = center;
+            this.horizontalRadius = horizontalRadius;
+            this.verticalRadius = verticalRadius;
+        }
+
+        boolean contains(int x, int y, int z) {
+            return Math.abs(x - center.getX()) <= horizontalRadius && Math.abs(y - center.getY()) <= verticalRadius
+                && Math.abs(z - center.getZ()) <= horizontalRadius;
+        }
+
+        boolean isImmediate(int x, int y, int z) {
+            return Math.abs(x - center.getX()) <= 1 && Math.abs(y - center.getY()) <= 1
+                && Math.abs(z - center.getZ()) <= 1;
+        }
+
+        int volume() {
+            return (horizontalRadius * 2 + 1) * (horizontalRadius * 2 + 1) * (verticalRadius * 2 + 1);
+        }
     }
 
     public boolean isCubeWatched(@Nullable Cube cube) {

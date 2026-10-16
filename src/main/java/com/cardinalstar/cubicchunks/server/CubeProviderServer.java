@@ -51,9 +51,9 @@ import com.cardinalstar.cubicchunks.CubicChunks;
 import com.cardinalstar.cubicchunks.api.IColumn;
 import com.cardinalstar.cubicchunks.api.ICube;
 import com.cardinalstar.cubicchunks.api.XYZAddressable;
-import com.cardinalstar.cubicchunks.api.worldgen.IWorldGenerator;
 import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator;
 import com.cardinalstar.cubicchunks.api.worldgen.ISpeculativeCubeGenerator.SpeculativeCubeHint;
+import com.cardinalstar.cubicchunks.api.worldgen.IWorldGenerator;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeInitLevel;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderCallback;
 import com.cardinalstar.cubicchunks.server.chunkio.CubeLoaderServer;
@@ -358,14 +358,18 @@ public class CubeProviderServer extends ChunkProviderServer
 
                 processed++;
 
-                if (request.isCancelled()) continue;
+                if (request.isCancelled()) {
+                    notifyPlayerRequestCompleted(request);
+                    continue;
+                }
 
-                if (request.provenance == EagerLoadProvenance.PLAYER_VIEW
-                    && request.effort == Requirement.GENERATE
+                if (request.provenance == EagerLoadProvenance.PLAYER_VIEW && request.effort == Requirement.GENERATE
                     && worldGenerator instanceof ISpeculativeCubeGenerator speculative) {
                     SpeculativeCubeHint hint = speculative
                         .classifyCube(request.pos.getX(), request.pos.getY(), request.pos.getZ());
-                    ((CubicPlayerManager) worldServer.getPlayerManager()).onSpeculativeCubeClassified(request.pos, hint);
+                    ((CubicPlayerManager) worldServer.getPlayerManager())
+                        .onSpeculativeCubeClassified(request.pos, hint);
+                    notifyPlayerRequestCompleted(request);
                     continue;
                 }
 
@@ -388,6 +392,7 @@ public class CubeProviderServer extends ChunkProviderServer
                         wanted,
                         actual);
                 }
+                notifyPlayerRequestCompleted(request);
             }
 
             if (container.cubes.isEmpty()) {
@@ -436,6 +441,11 @@ public class CubeProviderServer extends ChunkProviderServer
         }
 
         profiler.endSection();
+    }
+
+    private void notifyPlayerRequestCompleted(EagerCubeLoadRequest request) {
+        if (request.provenance == EagerLoadProvenance.PLAYER_VIEW)
+            ((CubicPlayerManager) worldServer.getPlayerManager()).onSpeculativeRequestCompleted(request);
     }
 
     @Override
