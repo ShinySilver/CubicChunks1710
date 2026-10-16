@@ -147,6 +147,7 @@ class IONbtWriter {
         // save the worldgen stage and the target stage
         cubeNbt.setShort("population", cube.getPopulationStatus());
         cubeNbt.setBoolean("isSurfaceTracked", cube.isSurfaceTracked());
+        cubeNbt.setByte("sealedFaces", cube.getSealedFaces());
 
         cubeNbt.setBoolean("initLightDone", cube.isInitialLightingDone());
     }

@@ -245,6 +245,12 @@ public interface ICube extends XYZAddressable, MetaContainer {
     boolean isSurfaceTracked();
 
     /**
+     * Returns the conservative six-bit mask of faces known to contain only fully opaque blocks.
+     * Clear means unknown or open; callers must never infer openness from generated block contents alone.
+     */
+    byte getSealedFaces();
+
+    /**
      * Check whether this cube's initial diffuse skylight has been calculated
      *
      * @return {@code true} if it has been calculated, {@code false} otherwise

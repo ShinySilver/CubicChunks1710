@@ -175,6 +175,7 @@ public class IONbtReader {
 
         // set the worldgen stage
         cube.setPopulationStatus(level.getShort("population"));
+        cube.setSealedFaces(level.getByte("sealedFaces"));
 
         // previous versions will get their surface tracking redone. This is intended
         cube.setSurfaceTracked(level.getBoolean("isSurfaceTracked"));

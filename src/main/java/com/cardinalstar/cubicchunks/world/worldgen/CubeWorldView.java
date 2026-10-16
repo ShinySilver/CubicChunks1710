@@ -41,6 +41,7 @@ public class CubeWorldView implements WorldView {
         ExtendedBlockStorage ebs = cube.getOrCreateStorage();
 
         ebs.func_150818_a(x & 0xF, y & 0xF, z & 0xF, block);
+        cube.onBoundaryBlockChanged(x & 0xF, y & 0xF, z & 0xF, block);
     }
 
     @Override
@@ -60,6 +61,7 @@ public class CubeWorldView implements WorldView {
 
         ebs.func_150818_a(x & 0xF, y & 0xF, z & 0xF, block);
         ebs.setExtBlockMetadata(x & 0xF, y & 0xF, z & 0xF, meta);
+        cube.onBoundaryBlockChanged(x & 0xF, y & 0xF, z & 0xF, block);
     }
 
     @Nonnull

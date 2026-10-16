@@ -21,6 +21,7 @@ public class CubeBlockView implements IMutableBlockView {
     public void setBlock(int x, int y, int z, @Nonnull Block block) {
         cube.getOrCreateStorage()
             .func_150818_a(x, y, z, block);
+        cube.onBoundaryBlockChanged(x, y, z, block);
     }
 
     @Override
@@ -35,6 +36,7 @@ public class CubeBlockView implements IMutableBlockView {
 
         ebs.func_150818_a(x, y, z, block);
         ebs.setExtBlockMetadata(x, y, z, meta);
+        cube.onBoundaryBlockChanged(x, y, z, block);
     }
 
     @Nonnull

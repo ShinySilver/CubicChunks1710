@@ -468,6 +468,8 @@ public abstract class MixinChunk implements IColumn, IColumnInternal {
 
         markDirty(blockToCube(y));
 
+        getCube(blockToCube(y)).onBoundaryBlockChanged(blockToLocal(x), blockToLocal(y), blockToLocal(z), block);
+
         if (getCube(blockToCube(y)).isSurfaceTracked()) {
             opacityIndex.onOpacityChange(blockToLocal(x), y, blockToLocal(z), block.getLightOpacity());
             getWorldObj().getLightingManager()

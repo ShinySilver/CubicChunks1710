@@ -818,6 +818,7 @@ public class CubeLoaderServer implements ICubeLoader {
                 if (result == null) return false;
 
                 this.cube = result.object;
+                cube.setSealedFaces(result.sealedFaces);
                 this.source = ObjectSource.Generated;
                 cube.setMeta(CUBE_INFO, this);
 

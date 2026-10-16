@@ -90,6 +90,14 @@ import it.unimi.dsi.fastutil.objects.Reference2ReferenceArrayMap;
 @ParametersAreNonnullByDefault
 public class Cube implements ICube {
 
+    public static final byte FACE_NEG_X = 1;
+    public static final byte FACE_POS_X = 1 << 1;
+    public static final byte FACE_NEG_Y = 1 << 2;
+    public static final byte FACE_POS_Y = 1 << 3;
+    public static final byte FACE_NEG_Z = 1 << 4;
+    public static final byte FACE_POS_Z = 1 << 5;
+    public static final byte ALL_FACES = 0x3f;
+
     /**
      * A 16x16x16 mapping of the block biome array.
      */
@@ -168,6 +176,8 @@ public class Cube implements ICube {
      * True only if all the blocks have been added to server height map. Always true clientside.
      */
     private boolean isSurfaceTracked = false;
+    /** Monotonic, conservative face-occlusion summary. Bits are cleared by boundary block changes. */
+    private byte sealedFaces;
     private boolean ticked = false;
 
     // private final CapabilityDispatcher capabilities;
@@ -552,6 +562,34 @@ public class Cube implements ICube {
         this.storage = ebs;
 
         installIntoChunk();
+    }
+
+    @Override
+    public byte getSealedFaces() {
+        return sealedFaces;
+    }
+
+    public void setSealedFaces(byte sealedFaces) {
+        this.sealedFaces = (byte) (sealedFaces & 0x3f);
+    }
+
+    /**
+     * Invalidates face knowledge after an ordinary block mutation. It intentionally never restores a bit: an open
+     * bit can only cause extra traversal, while incorrectly restoring one could hide reachable cubes.
+     */
+    public void onBoundaryBlockChanged(int localX, int localY, int localZ, Block block) {
+        if (sealedFaces == 0 || block.getLightOpacity() >= 255) return;
+        int clear = 0;
+        if (localX == 0) clear |= FACE_NEG_X;
+        if (localX == SIZE - 1) clear |= FACE_POS_X;
+        if (localY == 0) clear |= FACE_NEG_Y;
+        if (localY == SIZE - 1) clear |= FACE_POS_Y;
+        if (localZ == 0) clear |= FACE_NEG_Z;
+        if (localZ == SIZE - 1) clear |= FACE_POS_Z;
+        if ((sealedFaces & clear) != 0) {
+            sealedFaces &= ~clear;
+            markDirty();
+        }
     }
 
     public static final int VANILLA_EBS_COUNT = 16;
