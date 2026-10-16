@@ -12,6 +12,7 @@ import net.minecraftforge.event.world.ChunkWatchEvent;
 import com.cardinalstar.cubicchunks.CubicChunks;
 import com.cardinalstar.cubicchunks.api.XYZAddressable;
 import com.cardinalstar.cubicchunks.api.event.CubeEvent;
+import com.cardinalstar.cubicchunks.debug.CCProfiler;
 import com.cardinalstar.cubicchunks.network.PacketEncoderColumn;
 import com.cardinalstar.cubicchunks.network.PacketEncoderCube;
 import com.cardinalstar.cubicchunks.network.PacketEncoderCubeBlockChange;
@@ -55,132 +56,137 @@ public class WorldSyncStateMachine {
     }
 
     public void flush() {
-        Iterator<XYZAddressable> cubeIter = dirtyCubes.fastIterator();
+        long profileStarted = CCProfiler.isActive() ? System.nanoTime() : 0L;
+        try {
+            Iterator<XYZAddressable> cubeIter = dirtyCubes.fastIterator();
 
-        while (cubeIter.hasNext()) {
-            var pos = cubeIter.next();
+            while (cubeIter.hasNext()) {
+                var pos = cubeIter.next();
 
-            Cube cube = provider.getLoadedCube(pos.getX(), pos.getY(), pos.getZ());
+                Cube cube = provider.getLoadedCube(pos.getX(), pos.getY(), pos.getZ());
 
-            boolean isWatched = syncedCubes.contains(pos);
+                boolean isWatched = syncedCubes.contains(pos);
 
-            boolean watchable = cube != null && cube.isInitializedToLevel(CubeInitLevel.Lit)
-                && player.isWatchingCube(pos.getX(), pos.getY(), pos.getZ());
+                boolean watchable = cube != null && cube.isInitializedToLevel(CubeInitLevel.Lit)
+                    && player.isWatchingCube(pos.getX(), pos.getY(), pos.getZ());
 
-            if (isWatched && !watchable) {
-                CubePos cubePos = new CubePos(pos);
+                if (isWatched && !watchable) {
+                    CubePos cubePos = new CubePos(pos);
 
-                PacketEncoderUnloadCube.createPacket(cubePos)
-                    .sendToPlayer(player.player);
-
-                MinecraftForge.EVENT_BUS.post(new CubeEvent.UnWatch(provider.worldObj, cubePos, player.player));
-
-                syncedCubes.remove(pos);
-
-                ColumnData columnData = syncedColumns.get(pos.getX(), pos.getZ());
-
-                columnData.syncedCubeCount--;
-
-                if (columnData.syncedCubeCount <= 0) {
-                    syncedColumns.remove(pos.getX(), pos.getZ());
-
-                    PacketEncoderUnloadColumn.createPacket(pos.getX(), pos.getZ())
+                    PacketEncoderUnloadCube.createPacket(cubePos)
                         .sendToPlayer(player.player);
 
-                    MinecraftForge.EVENT_BUS.post(
-                        new ChunkWatchEvent.UnWatch(new ChunkCoordIntPair(pos.getX(), pos.getZ()), player.player));
+                    MinecraftForge.EVENT_BUS.post(new CubeEvent.UnWatch(provider.worldObj, cubePos, player.player));
+
+                    syncedCubes.remove(pos);
+
+                    ColumnData columnData = syncedColumns.get(pos.getX(), pos.getZ());
+
+                    columnData.syncedCubeCount--;
+
+                    if (columnData.syncedCubeCount <= 0) {
+                        syncedColumns.remove(pos.getX(), pos.getZ());
+
+                        PacketEncoderUnloadColumn.createPacket(pos.getX(), pos.getZ())
+                            .sendToPlayer(player.player);
+
+                        MinecraftForge.EVENT_BUS.post(
+                            new ChunkWatchEvent.UnWatch(new ChunkCoordIntPair(pos.getX(), pos.getZ()), player.player));
+                    }
+                } else if (!isWatched && watchable) {
+                    ColumnData columnData = syncedColumns.get(pos.getX(), pos.getZ());
+
+                    if (columnData == null) {
+                        columnData = new ColumnData();
+                        syncedColumns.put(pos.getX(), pos.getZ(), columnData);
+
+                        PacketEncoderColumn.createPacket(cube.getColumn())
+                            .sendToPlayer(player.player);
+
+                        MinecraftForge.EVENT_BUS.post(
+                            new ChunkWatchEvent.Watch(new ChunkCoordIntPair(pos.getX(), pos.getZ()), player.player));
+                    }
+
+                    columnData.syncedCubeCount++;
+                    syncedCubes.add(pos);
+
+                    sendCubeData(cube);
+
+                    dirtyBlocks.remove(pos.getX(), pos.getY(), pos.getZ());
+
+                    MinecraftForge.EVENT_BUS.post(new CubeEvent.Watch(provider.worldObj, cube, player.player));
                 }
-            } else if (!isWatched && watchable) {
-                ColumnData columnData = syncedColumns.get(pos.getX(), pos.getZ());
-
-                if (columnData == null) {
-                    columnData = new ColumnData();
-                    syncedColumns.put(pos.getX(), pos.getZ(), columnData);
-
-                    PacketEncoderColumn.createPacket(cube.getColumn())
-                        .sendToPlayer(player.player);
-
-                    MinecraftForge.EVENT_BUS
-                        .post(new ChunkWatchEvent.Watch(new ChunkCoordIntPair(pos.getX(), pos.getZ()), player.player));
-                }
-
-                columnData.syncedCubeCount++;
-                syncedCubes.add(pos);
-
-                sendCubeData(cube);
-
-                dirtyBlocks.remove(pos.getX(), pos.getY(), pos.getZ());
-
-                MinecraftForge.EVENT_BUS.post(new CubeEvent.Watch(provider.worldObj, cube, player.player));
-            }
-        }
-
-        for (var e : dirtyBlocks.fastEntryIterable()) {
-            if (!syncedCubes.contains(e.getX(), e.getY(), e.getZ())) {
-                CubicChunks.LOGGER.trace(
-                    "Tried to sync {} block updates to a cube at {} which was not synced",
-                    e.getValue()
-                        .size(),
-                    new CubePos(e.getX(), e.getY(), e.getZ()));
-
-                continue;
             }
 
-            if (player.isWatchingCube(e.getX(), e.getY(), e.getZ())) {
-                Cube cube = provider.getLoadedCube(e.getX(), e.getY(), e.getZ());
+            for (var e : dirtyBlocks.fastEntryIterable()) {
+                if (!syncedCubes.contains(e.getX(), e.getY(), e.getZ())) {
+                    CubicChunks.LOGGER.trace(
+                        "Tried to sync {} block updates to a cube at {} which was not synced",
+                        e.getValue()
+                            .size(),
+                        new CubePos(e.getX(), e.getY(), e.getZ()));
 
-                if (cube != null) {
-                    PacketEncoderCubeBlockChange.createPacket(cube, e.getValue())
-                        .sendToPlayer(player.player);
+                    continue;
+                }
 
-                    ShortIterator blocks = e.getValue()
-                        .iterator();
+                if (player.isWatchingCube(e.getX(), e.getY(), e.getZ())) {
+                    Cube cube = provider.getLoadedCube(e.getX(), e.getY(), e.getZ());
 
-                    while (blocks.hasNext()) {
-                        short pos = blocks.nextShort();
+                    if (cube != null) {
+                        PacketEncoderCubeBlockChange.createPacket(cube, e.getValue())
+                            .sendToPlayer(player.player);
 
-                        int rx = AddressTools.getLocalX(pos);
-                        int ry = AddressTools.getLocalY(pos);
-                        int rz = AddressTools.getLocalZ(pos);
+                        ShortIterator blocks = e.getValue()
+                            .iterator();
 
-                        TileEntity te = cube.getTileEntityUnsafe(rx, (e.getY() << 4) + ry, rz);
+                        while (blocks.hasNext()) {
+                            short pos = blocks.nextShort();
 
-                        if (te != null) {
-                            Packet desc = te.getDescriptionPacket();
+                            int rx = AddressTools.getLocalX(pos);
+                            int ry = AddressTools.getLocalY(pos);
+                            int rz = AddressTools.getLocalZ(pos);
 
-                            if (desc != null) {
-                                player.player.playerNetServerHandler.sendPacket(desc);
+                            TileEntity te = cube.getTileEntityUnsafe(rx, (e.getY() << 4) + ry, rz);
+
+                            if (te != null) {
+                                Packet desc = te.getDescriptionPacket();
+
+                                if (desc != null) {
+                                    player.player.playerNetServerHandler.sendPacket(desc);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        for (var e : dirtyHeightCols.fastEntryIterable()) {
-            if (!syncedColumns.containsKey(e.getX(), e.getZ())) {
-                CubicChunks.LOGGER.trace(
-                    "Tried to sync {} height map updates to a column at {} which was not synced",
-                    e.getValue()
-                        .cardinality(),
-                    new ChunkCoordIntPair(e.getX(), e.getZ()));
+            for (var e : dirtyHeightCols.fastEntryIterable()) {
+                if (!syncedColumns.containsKey(e.getX(), e.getZ())) {
+                    CubicChunks.LOGGER.trace(
+                        "Tried to sync {} height map updates to a column at {} which was not synced",
+                        e.getValue()
+                            .cardinality(),
+                        new ChunkCoordIntPair(e.getX(), e.getZ()));
 
-                continue;
-            }
+                    continue;
+                }
 
-            if (player.isWatchingColumn(e.getX(), e.getZ())) {
-                Chunk column = provider.getLoadedColumn(e.getX(), e.getZ());
+                if (player.isWatchingColumn(e.getX(), e.getZ())) {
+                    Chunk column = provider.getLoadedColumn(e.getX(), e.getZ());
 
-                if (column != null) {
-                    PacketEncoderHeightMapUpdate.createPacket(e.getValue(), column)
-                        .sendToPlayer(player.player);
+                    if (column != null) {
+                        PacketEncoderHeightMapUpdate.createPacket(e.getValue(), column)
+                            .sendToPlayer(player.player);
+                    }
                 }
             }
-        }
 
-        dirtyCubes.clear();
-        dirtyBlocks.clear();
-        dirtyHeightCols.clear();
+            dirtyCubes.clear();
+            dirtyBlocks.clear();
+            dirtyHeightCols.clear();
+        } finally {
+            if (profileStarted != 0L) CCProfiler.recordSyncFlush(System.nanoTime() - profileStarted);
+        }
     }
 
     public void onCubeMarkedDirty(int x, int y, int z) {

@@ -42,6 +42,7 @@ import com.cardinalstar.cubicchunks.api.world.storage.ICubicStorage;
 import com.cardinalstar.cubicchunks.api.world.storage.StorageFormatFactory;
 import com.cardinalstar.cubicchunks.api.worldtype.VanillaCubicWorldType;
 import com.cardinalstar.cubicchunks.async.TaskPool;
+import com.cardinalstar.cubicchunks.command.CommandCubicChunks;
 import com.cardinalstar.cubicchunks.event.handlers.ClientEventHandler;
 import com.cardinalstar.cubicchunks.event.handlers.CommonEventHandler;
 import com.cardinalstar.cubicchunks.network.NetworkChannel;
@@ -64,6 +65,7 @@ import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.event.FMLPostInitializationEvent;
 import cpw.mods.fml.common.event.FMLPreInitializationEvent;
 import cpw.mods.fml.common.event.FMLServerAboutToStartEvent;
+import cpw.mods.fml.common.event.FMLServerStartingEvent;
 import cpw.mods.fml.common.network.NetworkCheckHandler;
 import cpw.mods.fml.common.network.NetworkRegistry;
 import cpw.mods.fml.common.network.internal.NetworkModHolder;
@@ -199,6 +201,11 @@ public class CubicChunks {
         }, () -> () -> {
             // no-op, done by mixin
         });
+    }
+
+    @Mod.EventHandler
+    public void onServerStarting(FMLServerStartingEvent event) {
+        event.registerServerCommand(new CommandCubicChunks());
     }
 
     public static void registerAnvil3dStorageFormatProvider() {

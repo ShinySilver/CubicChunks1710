@@ -27,6 +27,7 @@ import net.minecraft.world.World;
 
 import com.cardinalstar.cubicchunks.CubicChunks;
 import com.cardinalstar.cubicchunks.client.CubeProviderClient;
+import com.cardinalstar.cubicchunks.debug.CCProfiler;
 import com.cardinalstar.cubicchunks.network.PacketEncoderCube.PacketCube;
 import com.cardinalstar.cubicchunks.util.CubePos;
 import com.cardinalstar.cubicchunks.util.CubeStatusVisualizer;
@@ -52,6 +53,7 @@ public class PacketEncoderCube extends CCPacketEncoder<PacketCube> {
     public PacketEncoderCube() {}
 
     public static PacketCube createPacket(Cube cube) {
+        long started = CCProfiler.isActive() ? System.nanoTime() : 0L;
         CubeStatusVisualizer.put(cube.getCoords(), CubeStatus.Synced);
 
         ByteBuf cubeData = Unpooled.buffer();
@@ -61,6 +63,8 @@ public class PacketEncoderCube extends CCPacketEncoder<PacketCube> {
         byte[] data = new byte[cubeData.writerIndex()];
 
         cubeData.readBytes(data);
+
+        if (started != 0L) CCProfiler.recordCubeEncode(System.nanoTime() - started, data.length);
 
         return new PacketCube(cube.getCoords(), data);
     }
@@ -75,14 +79,17 @@ public class PacketEncoderCube extends CCPacketEncoder<PacketCube> {
         buffer.writeCubePos(packet.cubePos);
 
         buffer.writeVarIntToBuffer(packet.data.length);
-        buffer.writeByteArray(
-            LZ4Factory.fastestInstance()
-                .fastCompressor()
-                .compress(packet.data));
+        long started = CCProfiler.isActive() ? System.nanoTime() : 0L;
+        byte[] compressed = LZ4Factory.fastestInstance()
+            .fastCompressor()
+            .compress(packet.data);
+        buffer.writeByteArray(compressed);
+        if (started != 0L) CCProfiler.recordCubeCompress(System.nanoTime() - started, compressed.length);
     }
 
     @Override
     public PacketCube readPacket(CCPacketBuffer buf) {
+        long started = CCProfiler.isActive() ? System.nanoTime() : 0L;
         CubePos pos = buf.readCubePos();
 
         byte[] decompressed = new byte[buf.readVarIntFromBuffer()];
@@ -92,11 +99,14 @@ public class PacketEncoderCube extends CCPacketEncoder<PacketCube> {
             .fastDecompressor()
             .decompress(data, decompressed);
 
+        if (started != 0L) CCProfiler.recordCubeDecode(System.nanoTime() - started);
+
         return new PacketCube(pos, decompressed);
     }
 
     @Override
     public void process(World world, PacketCube packet) {
+        long started = CCProfiler.isActive() ? System.nanoTime() : 0L;
         CubeProviderClient cubeCache = (CubeProviderClient) world.getChunkProvider();
 
         CubePos pos = packet.cubePos;
@@ -115,5 +125,6 @@ public class PacketEncoderCube extends CCPacketEncoder<PacketCube> {
             cube.onCubeLoad();
         }
         cube.markForRenderUpdate();
+        if (started != 0L) CCProfiler.recordCubeInstall(System.nanoTime() - started);
     }
 }
